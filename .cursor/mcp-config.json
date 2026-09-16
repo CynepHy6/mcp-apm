@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "skyeng-apm-server": {
-      "command": "/home/hy6/Code/mcp-smartroom-apm/mcp-server"
+      "command": "/home/hy6/Code/mcp/mcp-apm/mcp-server"
     }
   }
 } 

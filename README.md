@@ -161,8 +161,8 @@ query_index(
 
 ```bash
 # Клонируем репозиторий
-git clone <repository-url> mcp-smartroom-apm
-cd mcp-smartroom-apm
+git clone https://github.com/CynepHy6/mcp-apm.git mcp-apm
+cd mcp-apm
 
 # Автоматическая установка
 python3 setup.py    # Linux/macOS
