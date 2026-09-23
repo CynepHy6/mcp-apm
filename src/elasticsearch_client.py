@@ -79,6 +79,49 @@ class ElasticsearchManager:
         except Exception as e:
             raise RuntimeError(f"Ошибка Elasticsearch: {e}")
 
+    async def find_trace_entry_transaction(
+        self, trace_id: str, start: str, end: str
+    ) -> Optional[str]:
+        """Корневая transaction.id трейса в traces-apm*. None — документов нет."""
+        if not trace_id:
+            raise ValueError("trace_id обязателен")
+        window = {"range": {"@timestamp": {"gte": start, "lte": end}}}
+        trace_filter = [
+            {"term": {"trace.id": trace_id}},
+            {"term": {"processor.event": "transaction"}},
+            window,
+        ]
+        root_hits = await self._search_trace_transactions({
+            "bool": {
+                "filter": trace_filter,
+                "must_not": [{"exists": {"field": "parent.id"}}],
+            }
+        })
+        if root_hits:
+            return _transaction_id(root_hits[0])
+        any_hits = await self._search_trace_transactions({"bool": {"filter": trace_filter}})
+        if not any_hits:
+            return None
+        return _transaction_id(any_hits[0])
+
+    async def _search_trace_transactions(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        body = {
+            "size": 1,
+            "_source": ["transaction.id"],
+            "sort": [{"@timestamp": "asc"}],
+            "query": query,
+        }
+        try:
+            result = await self.client.search(index="traces-apm*", body=body)
+        except es_exceptions.AuthenticationException:
+            raise RuntimeError("Ошибка аутентификации Elasticsearch")
+        except es_exceptions.ConnectionError:
+            raise RuntimeError("Ошибка подключения к Elasticsearch")
+        except Exception as e:
+            raise RuntimeError(f"Ошибка Elasticsearch: {e}")
+        hits = result.body.get("hits", {}).get("hits", [])
+        return hits
+
     def _build_query(self, filters: Dict[str, Any], size: int, from_: int,
                     sort: Optional[List[Dict]]) -> Dict[str, Any]:
         """Строит тело запроса к Elasticsearch"""
@@ -159,3 +202,11 @@ class ElasticsearchManager:
             return [self._replace_field_names_recursive(item, alias_mapping) for item in obj]
         else:
             return obj
+
+
+def _transaction_id(hit: Dict[str, Any]) -> str:
+    transaction = (hit.get("_source") or {}).get("transaction") or {}
+    transaction_id = transaction.get("id")
+    if not transaction_id:
+        raise RuntimeError("В документе трейса нет transaction.id")
+    return transaction_id

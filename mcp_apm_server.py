@@ -17,6 +17,7 @@ import mcp.server.stdio
 from src.config_utils import load_index_config
 from src.elasticsearch_client import ElasticsearchManager
 from src.data_processing import process_elasticsearch_data
+from src.kibana_apm_client import KibanaApmClient, resolve_window
 from src.plotting import PlotManager
 
 logging.basicConfig(
@@ -77,6 +78,68 @@ async def list_tools() -> list[Tool]:
                     "sort": {"type": "array", "items": {"type": "object"}, "description": "Сортировка"}
                 },
                 "required": ["index", "filters"]
+            }
+        ),
+        Tool(
+            name="list_apm_services",
+            description="Сервисы Kibana APM за окно времени: latencyMs, errorRate, throughputPerMinute. Это не query_index и не index.yaml. latency в Kibana хранится в микросекундах, в ответе уже миллисекунды. throughputPerMinute — как в UI APM, транзакций в минуту.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "start": {"type": "string", "description": "Начало окна, ISO-8601. Пусто — 15 минут до end"},
+                    "end": {"type": "string", "description": "Конец окна, ISO-8601. Пусто — сейчас"},
+                    "environment": {"type": "string", "description": "ENVIRONMENT_ALL, ENVIRONMENT_NOT_DEFINED или имя окружения", "default": "ENVIRONMENT_ALL"},
+                    "kuery": {"type": "string", "description": "KQL-фильтр Kibana", "default": ""},
+                    "limit": {"type": "integer", "description": "Сколько сервисов вернуть, 1..100", "default": 40}
+                }
+            }
+        ),
+        Tool(
+            name="list_apm_transactions",
+            description="Группы транзакций одного сервиса Kibana APM: имя, latencyMs, errorRate, throughputPerMinute, impact. Пустой список — за окно групп нет, это не ошибка HTTP.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "service_name": {"type": "string", "description": "Имя сервиса, как в APM"},
+                    "transaction_type": {"type": "string", "description": "Тип транзакции", "default": "request"},
+                    "latency_aggregation_type": {"type": "string", "enum": ["avg", "p95", "p99"], "default": "avg"},
+                    "start": {"type": "string", "description": "Начало окна, ISO-8601"},
+                    "end": {"type": "string", "description": "Конец окна, ISO-8601"},
+                    "environment": {"type": "string", "default": "ENVIRONMENT_ALL"},
+                    "kuery": {"type": "string", "default": ""},
+                    "limit": {"type": "integer", "default": 30}
+                },
+                "required": ["service_name"]
+            }
+        ),
+        Tool(
+            name="list_apm_errors",
+            description="Группы ошибок сервиса Kibana APM: groupId, name, occurrences, culprit, type. Пустой список — ошибок за окно нет.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "service_name": {"type": "string", "description": "Имя сервиса, как в APM"},
+                    "start": {"type": "string", "description": "Начало окна, ISO-8601"},
+                    "end": {"type": "string", "description": "Конец окна, ISO-8601"},
+                    "environment": {"type": "string", "default": "ENVIRONMENT_ALL"},
+                    "kuery": {"type": "string", "default": ""},
+                    "limit": {"type": "integer", "default": 30}
+                },
+                "required": ["service_name"]
+            }
+        ),
+        Tool(
+            name="get_apm_trace",
+            description="Водопад одного трейса из Kibana APM: транзакции и спаны без сырого документа. offsetUs — микросекунды от старта входной транзакции; меньше значит раньше. Список по-прежнему не хронологический: его порядок — по длительности. Если entry_transaction_id не передан, корневая транзакция ищется в traces-apm*. Окно start/end должно накрывать трейс. exceedsMax или truncated — водопад обрезан, это не полный трейс.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "trace_id": {"type": "string", "description": "trace.id"},
+                    "entry_transaction_id": {"type": "string", "description": "transaction.id входа. Пусто — найти корневую транзакцию в Elasticsearch"},
+                    "start": {"type": "string", "description": "Начало окна, ISO-8601"},
+                    "end": {"type": "string", "description": "Конец окна, ISO-8601"}
+                },
+                "required": ["trace_id"]
             }
         )
     ]
@@ -177,12 +240,78 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             final_result = f"{retention_info}\n\n{plot_result}"
             return [TextContent(type="text", text=final_result)]
 
+        elif name == "list_apm_services":
+            args = arguments or {}
+            result = await KibanaApmClient().list_services(
+                start=args.get("start"),
+                end=args.get("end"),
+                environment=args.get("environment") or "ENVIRONMENT_ALL",
+                kuery=args.get("kuery") or "",
+                limit=args.get("limit") or 40,
+            )
+            return [_json_content(result)]
+
+        elif name == "list_apm_transactions":
+            args = arguments or {}
+            result = await KibanaApmClient().list_transactions(
+                service_name=args.get("service_name"),
+                transaction_type=args.get("transaction_type") or "request",
+                latency_aggregation_type=args.get("latency_aggregation_type") or "avg",
+                start=args.get("start"),
+                end=args.get("end"),
+                environment=args.get("environment") or "ENVIRONMENT_ALL",
+                kuery=args.get("kuery") or "",
+                limit=args.get("limit") or 30,
+            )
+            return [_json_content(result)]
+
+        elif name == "list_apm_errors":
+            args = arguments or {}
+            result = await KibanaApmClient().list_errors(
+                service_name=args.get("service_name"),
+                start=args.get("start"),
+                end=args.get("end"),
+                environment=args.get("environment") or "ENVIRONMENT_ALL",
+                kuery=args.get("kuery") or "",
+                limit=args.get("limit") or 30,
+            )
+            return [_json_content(result)]
+
+        elif name == "get_apm_trace":
+            args = arguments or {}
+            trace_id = args.get("trace_id")
+            entry_transaction_id = args.get("entry_transaction_id")
+            start = args.get("start")
+            end = args.get("end")
+            if not entry_transaction_id:
+                start, end = resolve_window(start, end)
+                entry_transaction_id = await es_manager.find_trace_entry_transaction(trace_id, start, end)
+                if not entry_transaction_id:
+                    raise RuntimeError(
+                        "Корневая транзакция трейса в traces-apm* не найдена. "
+                        "Расширьте окно start/end или передайте entry_transaction_id"
+                    )
+            result = await KibanaApmClient().get_trace(
+                trace_id=trace_id,
+                entry_transaction_id=entry_transaction_id,
+                start=start,
+                end=end,
+            )
+            return [_json_content(result)]
+
         else:
             return [TextContent(type="text", text=f"Неизвестный инструмент: {name}")]
 
     except Exception as e:
         logger.error(f"Ошибка выполнения инструмента {name}: {e}")
         return [TextContent(type="text", text=f"Ошибка: {str(e)}")]
+
+def _json_content(payload: dict) -> TextContent:
+    return TextContent(
+        type="text",
+        text=json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+    )
+
 
 def show_help():
     """Показывает справку по использованию"""
@@ -194,6 +323,10 @@ def show_help():
     print("  • list_indexes   - Список индексов и их описание")
     print("  • get_data_retention_info - Получить информацию о доступном периоде данных")
     print("  • query_index    - Выполнить запрос к индексу Elasticsearch")
+    print("  • list_apm_services - Сервисы Kibana APM")
+    print("  • list_apm_transactions - Группы транзакций сервиса")
+    print("  • list_apm_errors - Группы ошибок сервиса")
+    print("  • get_apm_trace  - Водопад одного трейса")
     if plot_manager.is_available():
         print("  • create_plot    - Создать график по данным из Elasticsearch")
     else:
@@ -206,6 +339,7 @@ def show_help():
     print("\nСтруктура модулей:")
     print("  • src/config_utils.py      - утилиты конфигурации")
     print("  • src/elasticsearch_client.py - клиент Elasticsearch")
+    print("  • src/kibana_apm_client.py - клиент Kibana APM")
     print("  • src/data_processing.py   - обработка данных")
     print("  • src/plotting.py          - создание графиков")
 
