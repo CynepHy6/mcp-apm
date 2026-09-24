@@ -129,8 +129,28 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="list_apm_trace_samples",
+            description="trace_id и transaction_id сэмплированных трейсов одной группы транзакций Kibana APM — вход для get_apm_trace. Имя транзакции брать из list_apm_transactions. min/max_duration_ms сужают выборку до медленных запросов. Сэмплируется не каждый запрос: пустой список за окно не значит, что транзакций не было.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "service_name": {"type": "string", "description": "Имя сервиса, как в APM"},
+                    "transaction_name": {"type": "string", "description": "Имя группы транзакций, например 'POST /server-api/v1/room'"},
+                    "transaction_type": {"type": "string", "default": "request"},
+                    "start": {"type": "string", "description": "Начало окна, ISO-8601"},
+                    "end": {"type": "string", "description": "Конец окна, ISO-8601"},
+                    "environment": {"type": "string", "default": "ENVIRONMENT_ALL"},
+                    "kuery": {"type": "string", "default": ""},
+                    "min_duration_ms": {"type": "number", "description": "Нижняя граница длительности, мс"},
+                    "max_duration_ms": {"type": "number", "description": "Верхняя граница длительности, мс"},
+                    "limit": {"type": "integer", "default": 20}
+                },
+                "required": ["service_name", "transaction_name"]
+            }
+        ),
+        Tool(
             name="get_apm_trace",
-            description="Водопад одного трейса из Kibana APM: транзакции и спаны без сырого документа. offsetUs — микросекунды от старта входной транзакции; меньше значит раньше. Список по-прежнему не хронологический: его порядок — по длительности. Если entry_transaction_id не передан, корневая транзакция ищется в traces-apm*. Окно start/end должно накрывать трейс. exceedsMax или truncated — водопад обрезан, это не полный трейс.",
+            description="Водопад одного трейса из Kibana APM: транзакции и спаны без сырого документа. trace_id и entry_transaction_id — из list_apm_trace_samples. offsetUs — микросекунды от старта входной транзакции; меньше значит раньше. Список по-прежнему не хронологический: его порядок — по длительности. Если entry_transaction_id не передан, корневая транзакция ищется в traces-apm*. Окно start/end должно накрывать трейс. exceedsMax или truncated — водопад обрезан, это не полный трейс.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -277,6 +297,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
             return [_json_content(result)]
 
+        elif name == "list_apm_trace_samples":
+            args = arguments or {}
+            result = await KibanaApmClient().list_trace_samples(
+                service_name=args.get("service_name"),
+                transaction_name=args.get("transaction_name"),
+                transaction_type=args.get("transaction_type") or "request",
+                start=args.get("start"),
+                end=args.get("end"),
+                environment=args.get("environment") or "ENVIRONMENT_ALL",
+                kuery=args.get("kuery") or "",
+                min_duration_ms=args.get("min_duration_ms"),
+                max_duration_ms=args.get("max_duration_ms"),
+                limit=args.get("limit") or 20,
+            )
+            return [_json_content(result)]
+
         elif name == "get_apm_trace":
             args = arguments or {}
             trace_id = args.get("trace_id")
@@ -326,6 +362,7 @@ def show_help():
     print("  • list_apm_services - Сервисы Kibana APM")
     print("  • list_apm_transactions - Группы транзакций сервиса")
     print("  • list_apm_errors - Группы ошибок сервиса")
+    print("  • list_apm_trace_samples - trace_id сэмплов группы транзакций")
     print("  • get_apm_trace  - Водопад одного трейса")
     if plot_manager.is_available():
         print("  • create_plot    - Создать график по данным из Elasticsearch")

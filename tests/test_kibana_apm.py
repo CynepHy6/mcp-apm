@@ -169,6 +169,47 @@ class TestKibanaApmClient(unittest.IsolatedAsyncioTestCase):
         self.assertLess(offsets["advisory lock"], offsets["SELECT FROM room FOR UPDATE"])
         self.assertNotIn("timestampUs", result["items"][0])
 
+    async def test_trace_samples_pass_duration_in_microseconds(self):
+        http = FakeHttp(FakeResponse(200, {"traceSamples": [
+            {"score": 0, "timestamp": "2026-09-24T18:23:08.369Z", "transactionId": "tx", "traceId": "trace"},
+        ]}))
+        with patch.dict(os.environ, ENV):
+            result = await KibanaApmClient(http=http).list_trace_samples(
+                "vimbox-core-rooms",
+                "POST /server-api/complex/v1/archive/pack-room",
+                start="2026-09-24T18:15:00Z",
+                end="2026-09-24T18:45:00Z",
+                min_duration_ms=20_000,
+            )
+        params = http.calls[0]["params"]
+        self.assertTrue(http.calls[0]["url"].endswith("/transactions/traces/samples"))
+        self.assertEqual(params["transactionName"], "POST /server-api/complex/v1/archive/pack-room")
+        self.assertEqual(params["sampleRangeFrom"], "20000000")
+        self.assertEqual(params["sampleRangeTo"], "86400000000")
+        self.assertEqual(result["samples"], [
+            {"timestamp": "2026-09-24T18:23:08.369Z", "traceId": "trace", "transactionId": "tx"},
+        ])
+
+    async def test_trace_samples_without_duration_skip_range(self):
+        http = FakeHttp(FakeResponse(200, {"traceSamples": []}))
+        with patch.dict(os.environ, ENV):
+            result = await KibanaApmClient(http=http).list_trace_samples(
+                "math",
+                "GET /",
+                start="2026-09-24T18:15:00Z",
+                end="2026-09-24T18:45:00Z",
+            )
+        self.assertNotIn("sampleRangeFrom", http.calls[0]["params"])
+        self.assertEqual(result["samples"], [])
+        self.assertEqual(result["total"], 0)
+
+    async def test_trace_samples_require_transaction_name_before_http(self):
+        http = FakeHttp(FakeResponse(200, {}))
+        with patch.dict(os.environ, ENV):
+            with self.assertRaises(ValueError):
+                await KibanaApmClient(http=http).list_trace_samples("math", " ")
+        self.assertEqual(http.calls, [])
+
     async def test_missing_kibana_url_fails_before_request(self):
         http = FakeHttp(FakeResponse(200, {}))
         env = dict(ENV)

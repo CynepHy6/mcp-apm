@@ -43,7 +43,7 @@
 ]
 ```
 
-### 2. `list_apm_services`, `list_apm_transactions`, `list_apm_errors`, `get_apm_trace`
+### 2. `list_apm_services`, `list_apm_transactions`, `list_apm_errors`, `list_apm_trace_samples`, `get_apm_trace`
 
 Сводка Kibana APM (`KIBANA_BASE_URL`, внутренние роуты `/internal/apm/*`). Это не поиск по `index.yaml`.
 
@@ -52,6 +52,7 @@
 - `list_apm_services` — сервисы за окно: `latencyMs`, `errorRate`, `throughputPerMinute`
 - `list_apm_transactions` — группы транзакций сервиса
 - `list_apm_errors` — группы ошибок сервиса. Пустой список значит, что ошибок нет
+- `list_apm_trace_samples` — `traceId` и `transactionId` сэмплов одной группы транзакций, по ним открывается `get_apm_trace`. `min_duration_ms` / `max_duration_ms` оставляют только медленные запросы. Сэмплируется не каждый запрос, пустой список не значит, что транзакций не было
 - `get_apm_trace` — водопад трейса. `offsetUs` — старт спана в микросекундах от входной транзакции, порядок элементов при этом не хронологический. Без `entry_transaction_id` корневая транзакция ищется в `traces-apm*`. `truncated` или `exceedsMax` — водопад неполный
 
 `query_index` по-прежнему принимает только индексы из `index.yaml`.

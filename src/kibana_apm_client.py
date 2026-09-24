@@ -235,6 +235,58 @@ class KibanaApmClient:
             "errors": returned,
         }
 
+    async def list_trace_samples(
+        self,
+        service_name: str,
+        transaction_name: str,
+        transaction_type: str = "request",
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        environment: str = "ENVIRONMENT_ALL",
+        kuery: str = "",
+        min_duration_ms: Optional[float] = None,
+        max_duration_ms: Optional[float] = None,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        _require_service_name(service_name)
+        if not transaction_name or not str(transaction_name).strip():
+            raise ValueError("transaction_name обязателен")
+        if min_duration_ms is not None and max_duration_ms is not None and min_duration_ms > max_duration_ms:
+            raise ValueError("min_duration_ms не может быть больше max_duration_ms")
+        start_iso, end_iso = resolve_window(start, end)
+        params = {
+            "start": start_iso,
+            "end": end_iso,
+            "environment": environment,
+            "kuery": kuery,
+            "transactionName": transaction_name,
+            "transactionType": transaction_type,
+        }
+        # Kibana ждёт диапазон длительности в микросекундах и обе границы сразу.
+        if min_duration_ms is not None or max_duration_ms is not None:
+            params["sampleRangeFrom"] = str(int((min_duration_ms or 0) * 1000))
+            params["sampleRangeTo"] = str(int((max_duration_ms if max_duration_ms is not None else 86_400_000) * 1000))
+        path = f"/internal/apm/services/{quote(service_name, safe='')}/transactions/traces/samples"
+        payload = await self._get(path, params)
+        samples = [
+            {
+                "timestamp": item.get("timestamp"),
+                "traceId": item.get("traceId"),
+                "transactionId": item.get("transactionId"),
+            }
+            for item in payload.get("traceSamples") or []
+        ]
+        returned, truncated = cap_items(samples, limit)
+        return {
+            "serviceName": service_name,
+            "transactionName": transaction_name,
+            "start": start_iso,
+            "end": end_iso,
+            "total": len(samples),
+            "truncated": truncated,
+            "samples": returned,
+        }
+
     async def get_trace(
         self,
         trace_id: str,
